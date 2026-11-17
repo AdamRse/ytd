@@ -1,0 +1,87 @@
+name: ytdlp-web
+
+services:
+  # ─── Broker de tâches ────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ytdlp-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - ytdlp-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─── API REST ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: .docker/backend/Dockerfile
+    container_name: ytdlp-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DOWNLOAD_DIR: /app/downloads
+    volumes:
+      - downloads:/app/downloads
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ytdlp-net
+    expose:
+      - "8000"          # non exposé au host, accessible seulement via frontend
+
+  # ─── Worker yt-dlp ───────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: .docker/worker/Dockerfile
+    container_name: ytdlp-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DOWNLOAD_DIR: /app/downloads
+    volumes:
+      - downloads:/app/downloads
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ytdlp-net
+    # Sécurité : le worker n'a pas besoin d'accès réseau privilégié
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # ─── Frontend + reverse-proxy ────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: .docker/frontend/Dockerfile
+    container_name: ytdlp-frontend
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - ytdlp-net
+
+volumes:
+  redis-data:
+  downloads:
+
+networks:
+  ytdlp-net:
+    driver: bridge
